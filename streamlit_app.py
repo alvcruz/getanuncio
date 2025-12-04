@@ -1,9 +1,8 @@
 import streamlit as st
-from streamlit_option_menu import option_menu
 import pandas as pd
-from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, Integer, String, TIMESTAMP, ForeignKey
-from sqlalchemy.exc import SQLAlchemyError
+import sqlite3
 from datetime import datetime
+import os
 
 # Configuração da página
 st.set_page_config(
@@ -49,64 +48,66 @@ st.markdown("""
         border-left: 4px solid #EF4444;
         margin: 1rem 0;
     }
+    .menu-btn {
+        width: 100%;
+        text-align: left;
+        padding: 0.75rem 1rem;
+        margin: 0.25rem 0;
+        border-radius: 0.5rem;
+        border: 1px solid #E5E7EB;
+        background-color: white;
+        cursor: pointer;
+    }
+    .menu-btn:hover {
+        background-color: #F3F4F6;
+    }
+    .menu-btn.active {
+        background-color: #3B82F6;
+        color: white;
+        border-color: #3B82F6;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Configuração da conexão com o banco de dados
-@st.cache_resource
-def init_connection():
-    """Inicializa a conexão com o banco de dados"""
-    try:
-        # CONFIGURE AQUI SUAS CREDENCIAIS DO MYSQL
-        # Formato: mysql+pymysql://usuario:senha@host:porta/banco_de_dados
-        connection_string = "mysql+pymysql://root:@localhost:3306/db_insumos"
-        
-        engine = create_engine(connection_string, pool_pre_ping=True)
-        return engine
-    except Exception as e:
-        st.error(f"❌ Erro ao conectar ao banco de dados: {e}")
-        return None
+# Configuração do banco de dados SQLite
+DB_PATH = "cartuchos.db"
 
-# Inicializar conexão
-engine = init_connection()
+def get_connection():
+    """Retorna uma conexão com o banco SQLite"""
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-# Função para verificar se uma coluna existe
-def coluna_existe(tabela, coluna):
-    """Verifica se uma coluna existe em uma tabela"""
-    try:
-        inspector = inspect(engine)
-        colunas = inspector.get_columns(tabela)
-        colunas_nomes = [c['name'] for c in colunas]
-        return coluna in colunas_nomes
-    except:
-        return False
-
-# Função para executar comandos SQL
 def executar_sql(query, params=None, fetch=False, show_error=True):
-    """Executa comandos SQL usando SQLAlchemy"""
-    if engine is None:
-        if show_error:
-            st.error("❌ Conexão com o banco de dados não estabelecida.")
-        return None
-    
+    """Executa comandos SQL no SQLite"""
     try:
-        with engine.connect() as conn:
-            if params:
-                result = conn.execute(text(query), params)
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        conn.commit()
+        
+        if fetch:
+            # Para SELECT, retornar DataFrame
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+            data = cursor.fetchall()
+            if data:
+                df = pd.DataFrame(data, columns=columns)
             else:
-                result = conn.execute(text(query))
+                df = pd.DataFrame(columns=columns)
+            cursor.close()
+            conn.close()
+            return df
+        else:
+            # Para INSERT, UPDATE, DELETE, retornar número de linhas afetadas
+            rowcount = cursor.rowcount
+            cursor.close()
+            conn.close()
+            return rowcount
             
-            conn.commit()
-            
-            if fetch:
-                # Para SELECT, retornar DataFrame
-                df = pd.DataFrame(result.fetchall(), columns=result.keys())
-                return df
-            else:
-                # Para INSERT, UPDATE, DELETE, retornar número de linhas afetadas
-                return result.rowcount
-                
-    except SQLAlchemyError as e:
+    except Exception as e:
         if show_error:
             st.error(f"❌ Erro SQL: {str(e)}")
             st.markdown(f"""
@@ -118,68 +119,58 @@ def executar_sql(query, params=None, fetch=False, show_error=True):
             </div>
             """, unsafe_allow_html=True)
         return None
-    except Exception as e:
-        if show_error:
-            st.error(f"❌ Erro inesperado: {str(e)}")
-        return None
 
-# Função para testar conexão
-def testar_conexao():
-    """Testa a conexão com o banco de dados"""
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return True, "✅ Conexão estabelecida com sucesso!"
-    except Exception as e:
-        return False, f"❌ Erro de conexão: {str(e)}"
-
-# Função para criar tabelas (versão simplificada)
 def criar_tabelas():
-    """Cria as tabelas necessárias se não existirem"""
+    """Cria as tabelas necessárias no SQLite"""
     
     tabelas_sql = [
         # Tabela fabricantes
         """CREATE TABLE IF NOT EXISTS fabricantes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            nome VARCHAR(100) NOT NULL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
         # Tabela cores_referencia
         """CREATE TABLE IF NOT EXISTS cores_referencia (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            nome VARCHAR(50) NOT NULL,
-            codigo_hex VARCHAR(7)
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            codigo_hex TEXT,
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
         # Tabela capacidades
         """CREATE TABLE IF NOT EXISTS capacidades (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            capacidade_ml INT NOT NULL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            capacidade_ml INTEGER NOT NULL,
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
         # Tabela modelos_impressora
         """CREATE TABLE IF NOT EXISTS modelos_impressora (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            nome VARCHAR(150) NOT NULL,
-            fabricante_id INT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            fabricante_id INTEGER,
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (fabricante_id) REFERENCES fabricantes(id)
         )""",
         
         # Tabela cartuchos
         """CREATE TABLE IF NOT EXISTS cartuchos (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            modelo_cartucho VARCHAR(100) NOT NULL,
-            cor_id INT,
-            modelo_impressora_id INT,
-            codigo_referencia VARCHAR(50),
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            modelo_cartucho TEXT NOT NULL,
+            cor_id INTEGER,
+            modelo_impressora_id INTEGER,
+            codigo_referencia TEXT,
+            data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (cor_id) REFERENCES cores_referencia(id),
             FOREIGN KEY (modelo_impressora_id) REFERENCES modelos_impressora(id)
         )""",
         
         # Tabela cartucho_capacidades
         """CREATE TABLE IF NOT EXISTS cartucho_capacidades (
-            cartucho_id INT,
-            capacidade_id INT,
+            cartucho_id INTEGER,
+            capacidade_id INTEGER,
             PRIMARY KEY (cartucho_id, capacidade_id),
             FOREIGN KEY (cartucho_id) REFERENCES cartuchos(id) ON DELETE CASCADE,
             FOREIGN KEY (capacidade_id) REFERENCES capacidades(id)
@@ -200,38 +191,84 @@ def criar_tabelas():
     
     return resultados
 
-# Função para inserir dados iniciais
 def inserir_dados_iniciais():
     """Insere dados iniciais nas tabelas"""
     dados_iniciais = [
         # Fabricantes
-        "INSERT IGNORE INTO fabricantes (nome) VALUES ('Epson')",
-        "INSERT IGNORE INTO fabricantes (nome) VALUES ('HP')",
-        "INSERT IGNORE INTO fabricantes (nome) VALUES ('Canon')",
-        "INSERT IGNORE INTO fabricantes (nome) VALUES ('Brother')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('Epson')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('HP')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('Canon')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('Brother')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('Lexmark')",
+        "INSERT OR IGNORE INTO fabricantes (nome) VALUES ('Xerox')",
         
         # Cores
-        "INSERT IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Black', '#000000')",
-        "INSERT IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Cyan', '#00FFFF')",
-        "INSERT IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Magenta', '#FF00FF')",
-        "INSERT IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Yellow', '#FFFF00')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Black', '#000000')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Cyan', '#00FFFF')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Magenta', '#FF00FF')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Yellow', '#FFFF00')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Light Cyan', '#88FFFF')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Light Magenta', '#FF88FF')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Gray', '#808080')",
+        "INSERT OR IGNORE INTO cores_referencia (nome, codigo_hex) VALUES ('Light Gray', '#D3D3D3')",
         
         # Capacidades
-        "INSERT IGNORE INTO capacidades (capacidade_ml) VALUES (100)",
-        "INSERT IGNORE INTO capacidades (capacidade_ml) VALUES (250)",
-        "INSERT IGNORE INTO capacidades (capacidade_ml) VALUES (500)",
-        "INSERT IGNORE INTO capacidades (capacidade_ml) VALUES (1000)"
+        "INSERT OR IGNORE INTO capacidades (capacidade_ml) VALUES (50)",
+        "INSERT OR IGNORE INTO capacidades (capacidade_ml) VALUES (100)",
+        "INSERT OR IGNORE INTO capacidades (capacidade_ml) VALUES (250)",
+        "INSERT OR IGNORE INTO capacidades (capacidade_ml) VALUES (500)",
+        "INSERT OR IGNORE INTO capacidades (capacidade_ml) VALUES (1000)"
     ]
     
     for sql in dados_iniciais:
         executar_sql(sql, show_error=False)
 
-# Menu lateral
+def testar_conexao():
+    """Testa a conexão com o banco de dados"""
+    try:
+        # Verificar se o arquivo do banco existe
+        if os.path.exists(DB_PATH):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tabelas = cursor.fetchall()
+            conn.close()
+            
+            if tabelas:
+                return True, f"✅ Conexão estabelecida! {len(tabelas)} tabelas encontradas."
+            else:
+                return True, "✅ Banco de dados conectado (sem tabelas ainda)."
+        else:
+            return True, "✅ SQLite pronto para criar banco de dados."
+    except Exception as e:
+        return False, f"❌ Erro de conexão: {str(e)}"
+
+# Menu lateral simplificado
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3208/3208720.png", width=100)
     st.markdown("## 🖨️ Sistema de Cartuchos")
+    st.markdown(f"**Banco de dados:** `{DB_PATH}`")
     
-    # Testar conexão
+    # Mostrar tamanho do arquivo do banco
+    if os.path.exists(DB_PATH):
+        tamanho_kb = os.path.getsize(DB_PATH) / 1024
+        st.caption(f"Tamanho: {tamanho_kb:.1f} KB")
+    
+    st.divider()
+    
+    # Menu manual usando radio buttons
+    menu_options = ["📊 Dashboard", "📝 Cadastros", "🔍 Consultas", "⚙️ Configurações", "🗄️ SQL Executor"]
+    
+    # Criar botões de menu manualmente
+    selected = st.radio(
+        "Menu Principal",
+        options=menu_options,
+        label_visibility="collapsed"
+    )
+    
+    st.divider()
+    
+    # Botões de ação
     if st.button("🔗 Testar Conexão", use_container_width=True):
         sucesso, mensagem = testar_conexao()
         if sucesso:
@@ -239,8 +276,7 @@ with st.sidebar:
         else:
             st.error(mensagem)
     
-    # Inicializar banco
-    if st.button("🔄 Inicializar Banco", use_container_width=True):
+    if st.button("🔄 Inicializar Banco", use_container_width=True, type="primary"):
         with st.spinner("Criando tabelas..."):
             resultados = criar_tabelas()
             for resultado in resultados:
@@ -249,16 +285,6 @@ with st.sidebar:
         with st.spinner("Inserindo dados iniciais..."):
             inserir_dados_iniciais()
             st.success("✅ Dados iniciais inseridos!")
-    
-    st.divider()
-    
-    selected = option_menu(
-        menu_title="Menu Principal",
-        options=["📊 Dashboard", "📝 Cadastros", "🔍 Consultas", "⚙️ Configurações", "🗄️ SQL Executor"],
-        icons=["house", "pencil-square", "search", "gear", "terminal"],
-        menu_icon="cast",
-        default_index=0,
-    )
 
 # ===== PÁGINA: DASHBOARD =====
 if selected == "📊 Dashboard":
@@ -268,7 +294,6 @@ if selected == "📊 Dashboard":
     sucesso, mensagem = testar_conexao()
     if not sucesso:
         st.error(mensagem)
-        st.stop()
     
     # Estatísticas com SQL direto
     col1, col2, col3, col4 = st.columns(4)
@@ -322,16 +347,12 @@ if selected == "📊 Dashboard":
 elif selected == "📝 Cadastros":
     st.markdown("<h1 class='main-header'>📝 Cadastro de Itens</h1>", unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🖨️ Fabricantes", 
-        "🖨️ Modelos Impressora", 
-        "🎨 Cores", 
-        "📦 Capacidades", 
-        "🖨️ Cartuchos"
-    ])
+    # Criar tabs usando st.tabs (nativo do Streamlit)
+    tab_titles = ["🖨️ Fabricantes", "🖨️ Modelos", "🎨 Cores", "📦 Capacidades", "🖨️ Cartuchos"]
+    tabs = st.tabs(tab_titles)
     
     # TAB 1: Fabricantes
-    with tab1:
+    with tabs[0]:
         col1, col2 = st.columns([1, 2])
         
         with col1:
@@ -342,8 +363,8 @@ elif selected == "📝 Cadastros":
                 submitted = st.form_submit_button("✅ Cadastrar Fabricante")
                 
                 if submitted and nome_fabricante:
-                    query = "INSERT INTO fabricantes (nome) VALUES (:nome)"
-                    resultado = executar_sql(query, params={"nome": nome_fabricante})
+                    query = "INSERT INTO fabricantes (nome) VALUES (?)"
+                    resultado = executar_sql(query, params=(nome_fabricante,))
                     if resultado is not None:
                         st.success(f"✅ Fabricante '{nome_fabricante}' cadastrado com sucesso!")
                         st.markdown(f"""
@@ -355,38 +376,16 @@ elif selected == "📝 Cadastros":
         
         with col2:
             st.markdown("<h3 class='sub-header'>Fabricantes Cadastrados</h3>", unsafe_allow_html=True)
-            # Query simplificada sem data_criacao
-            query = "SELECT id, nome FROM fabricantes ORDER BY nome"
+            query = "SELECT id, nome, strftime('%d/%m/%Y %H:%M', data_criacao) as data_criacao FROM fabricantes ORDER BY nome"
             fabricantes_df = executar_sql(query, fetch=True)
             
             if fabricantes_df is not None and not fabricantes_df.empty:
                 st.dataframe(fabricantes_df, use_container_width=True, hide_index=True)
-                
-                # Opção de excluir
-                with st.expander("🗑️ Gerenciar Fabricantes"):
-                    fabricante_excluir = st.selectbox(
-                        "Selecione o fabricante para excluir:",
-                        options=fabricantes_df['nome'].tolist(),
-                        key="excluir_fabricante"
-                    )
-                    
-                    if st.button("Excluir Fabricante", type="secondary"):
-                        # Verificar se o fabricante está sendo usado
-                        query_check = "SELECT COUNT(*) FROM modelos_impressora WHERE fabricante_id IN (SELECT id FROM fabricantes WHERE nome = :nome)"
-                        check_result = executar_sql(query_check, params={"nome": fabricante_excluir}, fetch=True)
-                        
-                        if check_result is not None and check_result.iloc[0][0] > 0:
-                            st.error(f"Não é possível excluir '{fabricante_excluir}' porque existem modelos de impressora associados.")
-                        else:
-                            query = "DELETE FROM fabricantes WHERE nome = :nome"
-                            if executar_sql(query, params={"nome": fabricante_excluir}):
-                                st.warning(f"Fabricante '{fabricante_excluir}' excluído!")
-                                st.rerun()
             else:
                 st.info("Nenhum fabricante cadastrado.")
     
     # TAB 2: Modelos de Impressora
-    with tab2:
+    with tabs[1]:
         col1, col2 = st.columns([1, 2])
         
         with col1:
@@ -406,8 +405,8 @@ elif selected == "📝 Cadastros":
                     
                     if submitted and nome_modelo:
                         fabricante_id = fabricantes_opcoes[fabricante_selecionado]
-                        query = "INSERT INTO modelos_impressora (nome, fabricante_id) VALUES (:nome, :fabricante_id)"
-                        if executar_sql(query, params={"nome": nome_modelo, "fabricante_id": fabricante_id}):
+                        query = "INSERT INTO modelos_impressora (nome, fabricante_id) VALUES (?, ?)"
+                        if executar_sql(query, params=(nome_modelo, fabricante_id)):
                             st.success(f"✅ Modelo '{nome_modelo}' cadastrado com sucesso!")
                             st.markdown(f"""
                             <div class='sql-box'>
@@ -421,7 +420,8 @@ elif selected == "📝 Cadastros":
         with col2:
             st.markdown("<h3 class='sub-header'>Modelos Cadastrados</h3>", unsafe_allow_html=True)
             query = """
-                SELECT mi.id, mi.nome, f.nome as fabricante
+                SELECT mi.id, mi.nome, f.nome as fabricante, 
+                       strftime('%d/%m/%Y %H:%M', mi.data_criacao) as data_criacao
                 FROM modelos_impressora mi
                 JOIN fabricantes f ON mi.fabricante_id = f.id
                 ORDER BY mi.nome
@@ -434,7 +434,7 @@ elif selected == "📝 Cadastros":
                 st.info("Nenhum modelo de impressora cadastrado.")
     
     # TAB 3: Cores
-    with tab3:
+    with tabs[2]:
         col1, col2 = st.columns([1, 2])
         
         with col1:
@@ -446,8 +446,8 @@ elif selected == "📝 Cadastros":
                 submitted = st.form_submit_button("✅ Cadastrar Cor")
                 
                 if submitted and nome_cor:
-                    query = "INSERT INTO cores_referencia (nome, codigo_hex) VALUES (:nome, :codigo_hex)"
-                    if executar_sql(query, params={"nome": nome_cor, "codigo_hex": codigo_hex}):
+                    query = "INSERT INTO cores_referencia (nome, codigo_hex) VALUES (?, ?)"
+                    if executar_sql(query, params=(nome_cor, codigo_hex)):
                         st.success(f"✅ Cor '{nome_cor}' cadastrada com sucesso!")
                         st.markdown(f"""
                         <div class='sql-box'>
@@ -458,7 +458,7 @@ elif selected == "📝 Cadastros":
         
         with col2:
             st.markdown("<h3 class='sub-header'>Cores Cadastradas</h3>", unsafe_allow_html=True)
-            query = "SELECT id, nome, codigo_hex FROM cores_referencia ORDER BY nome"
+            query = "SELECT id, nome, codigo_hex, strftime('%d/%m/%Y %H:%M', data_criacao) as data_criacao FROM cores_referencia ORDER BY nome"
             cores_df = executar_sql(query, fetch=True)
             
             if cores_df is not None and not cores_df.empty:
@@ -467,7 +467,7 @@ elif selected == "📝 Cadastros":
                 st.info("Nenhuma cor cadastrada.")
     
     # TAB 4: Capacidades
-    with tab4:
+    with tabs[3]:
         col1, col2 = st.columns([1, 2])
         
         with col1:
@@ -478,8 +478,8 @@ elif selected == "📝 Cadastros":
                 submitted = st.form_submit_button("✅ Cadastrar Capacidade")
                 
                 if submitted:
-                    query = "INSERT INTO capacidades (capacidade_ml) VALUES (:capacidade)"
-                    if executar_sql(query, params={"capacidade": int(capacidade_ml)}):
+                    query = "INSERT INTO capacidades (capacidade_ml) VALUES (?)"
+                    if executar_sql(query, params=(int(capacidade_ml),)):
                         st.success(f"✅ Capacidade de {capacidade_ml}ml cadastrada com sucesso!")
                         st.markdown(f"""
                         <div class='sql-box'>
@@ -490,7 +490,7 @@ elif selected == "📝 Cadastros":
         
         with col2:
             st.markdown("<h3 class='sub-header'>Capacidades Cadastradas</h3>", unsafe_allow_html=True)
-            query = "SELECT id, capacidade_ml FROM capacidades ORDER BY capacidade_ml"
+            query = "SELECT id, capacidade_ml, strftime('%d/%m/%Y %H:%M', data_criacao) as data_criacao FROM capacidades ORDER BY capacidade_ml"
             capacidades_df = executar_sql(query, fetch=True)
             
             if capacidades_df is not None and not capacidades_df.empty:
@@ -499,7 +499,7 @@ elif selected == "📝 Cadastros":
                 st.info("Nenhuma capacidade cadastrada.")
     
     # TAB 5: Cartuchos
-    with tab5:
+    with tabs[4]:
         st.markdown("<h3 class='sub-header'>Cadastrar Novo Cartucho</h3>", unsafe_allow_html=True)
         
         # Carregar dados para selects
@@ -544,23 +544,17 @@ elif selected == "📝 Cadastros":
                     # Inserir cartucho
                     query_cartucho = """
                         INSERT INTO cartuchos (modelo_cartucho, cor_id, modelo_impressora_id, codigo_referencia)
-                        VALUES (:modelo, :cor_id, :modelo_id, :codigo)
+                        VALUES (?, ?, ?, ?)
                     """
                     
                     try:
-                        with engine.connect() as conn:
-                            # Inserir cartucho e obter o ID
-                            result = conn.execute(
-                                text(query_cartucho),
-                                {
-                                    "modelo": modelo_cartucho,
-                                    "cor_id": cor_id,
-                                    "modelo_id": modelo_id,
-                                    "codigo": codigo_referencia
-                                }
-                            )
-                            cartucho_id = result.lastrowid
-                            conn.commit()
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        
+                        # Inserir cartucho e obter o ID
+                        cursor.execute(query_cartucho, (modelo_cartucho, cor_id, modelo_id, codigo_referencia))
+                        cartucho_id = cursor.lastrowid
+                        conn.commit()
                         
                         # Associar capacidades
                         for cap_str in capacidades_selecionadas:
@@ -568,9 +562,13 @@ elif selected == "📝 Cadastros":
                             capacidade_id = int(capacidades_df[capacidades_df['capacidade_ml'] == capacidade_ml].iloc[0]['id'])
                             query_associar = """
                                 INSERT INTO cartucho_capacidades (cartucho_id, capacidade_id)
-                                VALUES (:cartucho_id, :capacidade_id)
+                                VALUES (?, ?)
                             """
-                            executar_sql(query_associar, params={"cartucho_id": cartucho_id, "capacidade_id": capacidade_id})
+                            cursor.execute(query_associar, (cartucho_id, capacidade_id))
+                        
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
                         
                         st.success(f"✅ Cartucho '{modelo_cartucho}' cadastrado com sucesso!")
                         
@@ -610,7 +608,8 @@ elif selected == "📝 Cadastros":
                 cr.nome as cor,
                 mi.nome as modelo_impressora,
                 f.nome as fabricante,
-                GROUP_CONCAT(cap.capacidade_ml ORDER BY cap.capacidade_ml SEPARATOR ', ') as capacidades
+                GROUP_CONCAT(cap.capacidade_ml) as capacidades,
+                strftime('%d/%m/%Y %H:%M', c.data_criacao) as data_criacao
             FROM cartuchos c
             JOIN cores_referencia cr ON c.cor_id = cr.id
             JOIN modelos_impressora mi ON c.modelo_impressora_id = mi.id
@@ -679,7 +678,7 @@ elif selected == "🔍 Consultas":
                 cr.nome as cor,
                 mi.nome as modelo_impressora,
                 f.nome as fabricante,
-                GROUP_CONCAT(cap.capacidade_ml ORDER BY cap.capacidade_ml SEPARATOR ', ') as capacidades
+                GROUP_CONCAT(cap.capacidade_ml) as capacidades
             FROM cartuchos c
             JOIN cores_referencia cr ON c.cor_id = cr.id
             JOIN modelos_impressora mi ON c.modelo_impressora_id = mi.id
@@ -689,23 +688,20 @@ elif selected == "🔍 Consultas":
             WHERE 1=1
         """
         
-        params = {}
-        param_count = 1
+        params = []
         
         if filtro_cor != "Todos":
-            query_base += f" AND cr.nome = :param{param_count}"
-            params[f"param{param_count}"] = filtro_cor
-            param_count += 1
+            query_base += " AND cr.nome = ?"
+            params.append(filtro_cor)
         
         if filtro_fabricante != "Todos":
-            query_base += f" AND f.nome = :param{param_count}"
-            params[f"param{param_count}"] = filtro_fabricante
-            param_count += 1
+            query_base += " AND f.nome = ?"
+            params.append(filtro_fabricante)
         
         if filtro_capacidade != "Todas":
             capacidade_ml = int(filtro_capacidade.replace("ml", ""))
-            query_base += f" AND cap.capacidade_ml = :param{param_count}"
-            params[f"param{param_count}"] = capacidade_ml
+            query_base += " AND cap.capacidade_ml = ?"
+            params.append(capacidade_ml)
         
         query_base += " GROUP BY c.id ORDER BY c.modelo_cartucho"
         
@@ -832,35 +828,37 @@ elif selected == "🗄️ SQL Executor":
     # Estrutura do banco
     st.markdown("<h3 class='sub-header'>📋 Estrutura do Banco</h3>", unsafe_allow_html=True)
     
-    # Listar tabelas
     try:
-        inspector = inspect(engine)
-        tabelas = inspector.get_table_names()
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Listar tabelas
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tabelas = cursor.fetchall()
         
         if tabelas:
-            for tabela in tabelas:
+            for (tabela,) in tabelas:
                 with st.expander(f"📁 {tabela}"):
-                    try:
-                        colunas = inspector.get_columns(tabela)
-                        colunas_info = []
-                        for coluna in colunas:
-                            colunas_info.append({
-                                'Nome': coluna['name'],
-                                'Tipo': str(coluna['type']),
-                                'Nullable': coluna['nullable'],
-                                'Primary Key': coluna.get('primary_key', False)
-                            })
-                        st.dataframe(pd.DataFrame(colunas_info))
-                        
-                        # Mostrar dados de exemplo
-                        dados_exemplo = executar_sql(f"SELECT * FROM {tabela} LIMIT 5", fetch=True)
-                        if dados_exemplo is not None and not dados_exemplo.empty:
-                            st.write(f"**Dados de exemplo (5 primeiros registros):**")
-                            st.dataframe(dados_exemplo, hide_index=True)
-                    except Exception as e:
-                        st.error(f"Erro ao obter estrutura da tabela: {str(e)}")
+                    # Obter estrutura da tabela
+                    cursor.execute(f"PRAGMA table_info({tabela})")
+                    colunas_info = cursor.fetchall()
+                    
+                    # Converter para DataFrame
+                    colunas_df = pd.DataFrame(colunas_info, columns=['cid', 'name', 'type', 'notnull', 'dflt_value', 'pk'])
+                    st.dataframe(colunas_df[['name', 'type', 'notnull', 'pk']].rename(
+                        columns={'name': 'Coluna', 'type': 'Tipo', 'notnull': 'Obrigatório', 'pk': 'Chave Primária'}
+                    ), hide_index=True)
+                    
+                    # Mostrar dados de exemplo
+                    dados_exemplo = executar_sql(f"SELECT * FROM {tabela} LIMIT 5", fetch=True)
+                    if dados_exemplo is not None and not dados_exemplo.empty:
+                        st.write(f"**Dados de exemplo (5 primeiros registros):**")
+                        st.dataframe(dados_exemplo, hide_index=True)
         else:
             st.info("Nenhuma tabela encontrada no banco de dados.")
+        
+        cursor.close()
+        conn.close()
     except Exception as e:
         st.error(f"❌ Erro ao listar estrutura: {str(e)}")
 
@@ -871,16 +869,17 @@ elif selected == "⚙️ Configurações":
     # Configuração de conexão
     st.markdown("### 🔧 Configuração de Conexão")
     
-    with st.expander("Ver Configuração Atual"):
-        st.info("""
-        Esta aplicação usa SQLAlchemy para conexão com MySQL.
+    with st.expander("Informações do SQLite"):
+        st.info(f"""
+        **Banco de dados:** {DB_PATH}
         
-        String de conexão atual:
-        ```python
-        mysql+pymysql://root:@localhost:3306/db_insumos
-        ```
+        SQLite é um banco de dados embutido que armazena tudo em um único arquivo.
         
-        Para alterar, modifique a função `init_connection()` no código.
+        **Vantagens:**
+        - Não precisa de servidor separado
+        - Arquivo único fácil de fazer backup
+        - Leve e rápido
+        - Ideal para aplicações pequenas/médias
         """)
     
     # Testar conexão
@@ -931,51 +930,83 @@ elif selected == "⚙️ Configurações":
     # Backup de dados
     st.markdown("### 💾 Backup de Dados")
     
-    if st.button("📤 Gerar Backup SQL"):
-        # Gerar script SQL de backup
-        backup_sql = "-- Backup do Sistema de Cartuchos\n-- Data: " + pd.Timestamp.now().strftime("%d/%m/%Y %H:%M:%S") + "\n\n"
-        
-        # Obter todas as tabelas
-        inspector = inspect(engine)
-        tabelas = inspector.get_table_names()
-        
-        for tabela in tabelas:
-            # Dados da tabela
-            dados = executar_sql(f"SELECT * FROM {tabela}", fetch=True)
-            if dados is not None and not dados.empty:
-                backup_sql += f"\n-- Dados da tabela: {tabela}\n"
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📤 Gerar Backup SQL", use_container_width=True):
+            # Gerar script SQL de backup
+            backup_sql = f"-- Backup do Sistema de Cartuchos\n-- Banco: {DB_PATH}\n-- Data: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+            
+            try:
+                conn = get_connection()
+                cursor = conn.cursor()
                 
-                # Gerar INSERTs
-                for _, row in dados.iterrows():
-                    colunas = ', '.join(row.index)
-                    valores = []
-                    for v in row.values:
-                        if pd.isna(v):  # Tratar valores NaN
-                            valores.append('NULL')
-                        elif isinstance(v, str):
-                            # Escapar aspas simples
-                            v_escaped = v.replace("'", "''")
-                            valores.append(f"'{v_escaped}'")
-                        elif isinstance(v, (int, float)):
-                            valores.append(str(v))
-                        elif v is None:
-                            valores.append('NULL')
-                        else:
-                            valores.append(f"'{str(v)}'")
+                # Listar tabelas
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                tabelas = cursor.fetchall()
+                
+                for (tabela,) in tabelas:
+                    # Dados da tabela
+                    dados = executar_sql(f"SELECT * FROM {tabela}", fetch=True)
+                    if dados is not None and not dados.empty:
+                        backup_sql += f"\n-- Dados da tabela: {tabela}\n"
+                        
+                        # Gerar INSERTs
+                        for _, row in dados.iterrows():
+                            colunas = ', '.join(row.index)
+                            valores = []
+                            for v in row.values:
+                                if pd.isna(v):  # Tratar valores NaN
+                                    valores.append('NULL')
+                                elif isinstance(v, str):
+                                    # Escapar aspas simples
+                                    v_escaped = v.replace("'", "''")
+                                    valores.append(f"'{v_escaped}'")
+                                elif isinstance(v, (int, float)):
+                                    valores.append(str(v))
+                                elif v is None:
+                                    valores.append('NULL')
+                                else:
+                                    valores.append(f"'{str(v)}'")
+                            
+                            valores_str = ', '.join(valores)
+                            backup_sql += f"INSERT INTO {tabela} ({colunas}) VALUES ({valores_str});\n"
+                
+                cursor.close()
+                conn.close()
+                
+                # Mostrar e permitir download
+                st.download_button(
+                    label="📥 Download Backup.sql",
+                    data=backup_sql,
+                    file_name=f"backup_cartuchos_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.sql",
+                    mime="text/plain"
+                )
+                
+                with st.expander("📝 Visualizar Backup"):
+                    st.code(backup_sql, language="sql")
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao gerar backup: {str(e)}")
+    
+    with col2:
+        if st.button("🗑️ Limpar Banco de Dados", use_container_width=True, type="secondary"):
+            st.warning("⚠️ Esta ação irá apagar todos os dados!")
+            confirmar = st.checkbox("Confirmar que deseja apagar todos os dados")
+            
+            if confirmar and st.button("✅ Confirmar Exclusão", type="primary"):
+                try:
+                    # Fechar conexões
+                    conn = get_connection()
+                    conn.close()
                     
-                    valores_str = ', '.join(valores)
-                    backup_sql += f"INSERT INTO {tabela} ({colunas}) VALUES ({valores_str});\n"
-        
-        # Mostrar e permitir download
-        st.download_button(
-            label="📥 Download Backup.sql",
-            data=backup_sql,
-            file_name=f"backup_cartuchos_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.sql",
-            mime="text/plain"
-        )
-        
-        with st.expander("📝 Visualizar Backup"):
-            st.code(backup_sql, language="sql")
+                    # Remover arquivo do banco
+                    if os.path.exists(DB_PATH):
+                        os.remove(DB_PATH)
+                        st.success("✅ Banco de dados excluído com sucesso!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erro ao excluir banco: {str(e)}")
     
     # Limpar cache
     st.divider()
@@ -988,6 +1019,6 @@ elif selected == "⚙️ Configurações":
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #6B7280; padding: 1rem;'>
-    🖨️ Sistema de Gerenciamento de Cartuchos | Desenvolvido com Streamlit + SQLAlchemy + MySQL
+    🖨️ Sistema de Gerenciamento de Cartuchos | Desenvolvido com Streamlit + SQLite
 </div>
 """, unsafe_allow_html=True)
